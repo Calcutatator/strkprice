@@ -207,6 +207,14 @@
             top: 50%;
         }
 
+        .bar.placeholder {
+            top: 50%;
+            bottom: auto;
+            transform: translate(-50%, -50%);
+            min-height: 0;
+            border-radius: 2px;
+        }
+
         .center-line {
             position: absolute;
             left: 0;
@@ -260,7 +268,7 @@
             for (let i = 0; i < MAX_TICKS; i++) {
                 priceTicks.push({
                     price: 0,
-                    direction: 'up',
+                    direction: 'placeholder',
                     changeAmount: 0, // 0 means placeholder
                     isPlaceholder: true
                 });
@@ -394,19 +402,28 @@
 
             // Fixed bar height for all bars (same size for all)
             const fixedBarHeight = 40;
+            const placeholderSize = fixedBarHeight / 10;
 
             // Render bars from left (oldest) to right (newest)
-            priceTicks.forEach((tick, index) => {
+            priceTicks.forEach((tick) => {
                 const wrapper = document.createElement('div');
                 wrapper.className = 'bar-wrapper';
 
-                const bar = document.createElement('div');
-                bar.className = `bar ${tick.direction}`;
+                if (tick.isPlaceholder) {
+                    const placeholderBar = document.createElement('div');
+                    placeholderBar.className = 'bar placeholder';
+                    placeholderBar.style.height = `${placeholderSize}px`;
+                    placeholderBar.style.width = `${placeholderSize}px`;
+                    wrapper.appendChild(placeholderBar);
+                } else {
+                    const bar = document.createElement('div');
+                    bar.className = `bar ${tick.direction}`;
 
-                // All bars have the same fixed height
-                bar.style.height = `${fixedBarHeight}px`;
+                    // All bars have the same fixed height
+                    bar.style.height = `${fixedBarHeight}px`;
 
-                wrapper.appendChild(bar);
+                    wrapper.appendChild(bar);
+                }
                 barChartEl.appendChild(wrapper);
             });
         }
