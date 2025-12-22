@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STRK</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+            background: #000;
+            color: #fff;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        main {
+            min-height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+
+        .container {
+            text-align: center;
+            width: 100%;
+            max-width: 600px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .container.ready {
+            opacity: 1;
+        }
+
+        .tagline {
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            opacity: 0.5;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .ticker {
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            opacity: 0.5;
+            margin-bottom: 8px;
+        }
+
+        .price-wrapper {
+            display: inline-flex;
+            align-items: baseline;
+            justify-content: center;
+        }
+
+        .currency {
+            font-size: 32px;
+            font-weight: 300;
+            opacity: 0.6;
+            margin-right: 4px;
+        }
+
+        .price {
+            display: inline-flex;
+            font-size: 72px;
+            font-weight: 300;
+            letter-spacing: -0.02em;
+        }
+
+        .digit-slot {
+            display: inline-block;
+            height: 1.15em;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .digit-roll {
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .digit-roll span {
+            height: 1.15em;
+            line-height: 1.15em;
+        }
+
+        /* Price direction flash */
+        .price.flash-up .digit-roll span {
+            color: #22c55e;
+        }
+
+        .price.flash-down .digit-roll span {
+            color: #ef4444;
+        }
+
+        .price .digit-roll span {
+            transition: color 0.8s ease;
+        }
+
+        .chart-container {
+            position: relative;
+            margin-top: 60px;
+            height: 150px;
+            opacity: 0.8;
+        }
+
+        .bar-chart {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+        }
+
+        .bar-wrapper {
+            flex: 1;
+            height: 100%;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .bar {
+            width: 8px;
+            background: #fff;
+            transition: height 0.3s ease;
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            min-height: 2px;
+        }
+
+        .bar.up {
+            border-top-left-radius: 2px;
+            border-top-right-radius: 2px;
+            bottom: 50%;
+        }
+
+        .bar.down {
+            border-bottom-left-radius: 2px;
+            border-bottom-right-radius: 2px;
+            top: 50%;
+        }
+
+        .center-line {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-50%);
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="container">
+            <div class="ticker">STRK</div>
+            <div class="price-wrapper">
+                <span class="currency">$</span><span class="price" id="price"></span>
+            </div>
+            <div class="chart-container">
+                <div class="center-line"></div>
+                <div class="bar-chart" id="bar-chart"></div>
+            </div>
+        </div>
+    </main>
+    <script>
+        // STRK Price App - Custom Bar Chart
+
+        // Binance WebSocket for real-time price
+        const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/strkusdt@trade';
+
+        // CoinGecko for initial price
+        const COINGECKO_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=starknet&vs_currencies=usd';
+
+        const priceEl = document.getElementById('price');
+        const barChartEl = document.getElementById('bar-chart');
+        const container = document.querySelector('.container');
+
+        let priceTicks = [];  // Array of {price, direction: 'up'|'down', changeAmount}
+        let previousPrice = null;   // For tracking direction
+        let isReady = false;        // Has first price loaded?
+        const MAX_TICKS = 10;
+
+        // Initialize with 10 placeholder bars (all pointing up)
+        function initializePlaceholderBars() {
+            for (let i = 0; i < MAX_TICKS; i++) {
+                priceTicks.push({
+                    price: 0,
+                    direction: 'up',
+                    changeAmount: 0, // 0 means placeholder
+                    isPlaceholder: true
+                });
+            }
+            renderBarChart();
+        }
+
+        // Format price with commas and 5 decimal places
+        function formatPrice(price) {
+            return price.toLocaleString('en-US', {
+                minimumFractionDigits: 5,
+                maximumFractionDigits: 5
+            });
+        }
+
+        // Current displayed characters
+        let currentChars = [];
+
+        // Create rolling digit HTML
+        function createDigitSlot(char, index) {
+            const slot = document.createElement('span');
+            slot.className = 'digit-slot';
+            slot.dataset.index = index;
+            
+            const roll = document.createElement('span');
+            roll.className = 'digit-roll';
+            
+            // For digits, create a column of 0-9
+            if (/\d/.test(char)) {
+                for (let i = 0; i <= 9; i++) {
+                    const span = document.createElement('span');
+                    span.textContent = i;
+                    roll.appendChild(span);
+                }
+                roll.style.transform = `translateY(-${parseInt(char) * (100 / 10)}%)`;
+            } else {
+                // For non-digits (comma, period), just show the character
+                const span = document.createElement('span');
+                span.textContent = char;
+                roll.appendChild(span);
+            }
+            
+            slot.appendChild(roll);
+            return slot;
+        }
+
+        // Update price with rolling animation
+        function updatePriceDisplay(newPrice) {
+            const formattedPrice = formatPrice(newPrice);
+            const newChars = formattedPrice.split('');
+            
+            // If structure changed (different length), rebuild
+            if (newChars.length !== currentChars.length) {
+                priceEl.innerHTML = '';
+                newChars.forEach((char, i) => {
+                    priceEl.appendChild(createDigitSlot(char, i));
+                });
+                currentChars = newChars;
+                return;
+            }
+            
+            // Update only changed digits with roll animation
+            const slots = priceEl.querySelectorAll('.digit-slot');
+            newChars.forEach((char, i) => {
+                if (char !== currentChars[i]) {
+                    const roll = slots[i].querySelector('.digit-roll');
+                    if (/\d/.test(char)) {
+                        roll.style.transform = `translateY(-${parseInt(char) * (100 / 10)}%)`;
+                    }
+                }
+            });
+            
+            currentChars = newChars;
+        }
+
+        // Fetch initial price from CoinGecko
+        async function fetchInitialPrice() {
+            try {
+                const res = await fetch(COINGECKO_PRICE_URL);
+                const data = await res.json();
+                return data.starknet.usd;
+            } catch (err) {
+                console.error('Failed to fetch initial price:', err);
+                return null;
+            }
+        }
+
+        // Reveal the UI
+        function revealUI() {
+            if (isReady) return;
+            isReady = true;
+            setTimeout(() => {
+                container.classList.add('ready');
+            }, 100);
+        }
+
+        // Add a price tick to the bar chart (only if price changed)
+        function addPriceTick(price) {
+            // Only add a bar if price has actually changed
+            if (previousPrice === null || price === previousPrice) {
+                previousPrice = price;
+                return; // Skip flat prices
+            }
+
+            const direction = price > previousPrice ? 'up' : 'down';
+            const changeAmount = Math.abs(price - previousPrice); // Absolute price change
+
+            // Remove leftmost bar and add new bar on the right (overwrite from right to left)
+            priceTicks.shift(); // Remove oldest (leftmost)
+            priceTicks.push({
+                price: price,
+                direction: direction,
+                changeAmount: changeAmount,
+                isPlaceholder: false
+            });
+
+            previousPrice = price;
+            renderBarChart();
+        }
+
+        // Render the bar chart
+        function renderBarChart() {
+            barChartEl.innerHTML = '';
+
+            if (priceTicks.length === 0) return;
+
+            // Fixed bar height for all bars (same size for all)
+            const fixedBarHeight = 40;
+
+            // Render bars from left (oldest) to right (newest)
+            priceTicks.forEach((tick, index) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'bar-wrapper';
+
+                const bar = document.createElement('div');
+                bar.className = `bar ${tick.direction}`;
+
+                // All bars have the same fixed height
+                bar.style.height = `${fixedBarHeight}px`;
+
+                wrapper.appendChild(bar);
+                barChartEl.appendChild(wrapper);
+            });
+        }
+
+        // Connect to Binance WebSocket for real-time price updates
+        function connectPriceStream() {
+            const ws = new WebSocket(BINANCE_WS_URL);
+            
+            ws.onmessage = (event) => {
+                const trade = JSON.parse(event.data);
+                const price = parseFloat(trade.p);
+                
+                // Flash color on price change
+                if (previousPrice !== null && price !== previousPrice) {
+                    priceEl.classList.remove('flash-up', 'flash-down');
+                    void priceEl.offsetWidth;
+                    priceEl.classList.add(price > previousPrice ? 'flash-up' : 'flash-down');
+                    
+                    setTimeout(() => {
+                        priceEl.classList.remove('flash-up', 'flash-down');
+                    }, 600);
+                }
+                
+                updatePriceDisplay(price);
+                addPriceTick(price);
+                document.title = `$${formatPrice(price)} · STRK`;
+            };
+            
+            ws.onclose = () => {
+                setTimeout(connectPriceStream, 1000);
+            };
+            
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+                ws.close();
+            };
+        }
+
+        // Initial load
+        async function init() {
+            // Initialize with placeholder bars first
+            initializePlaceholderBars();
+            
+            // Fetch initial price
+            const initialPrice = await fetchInitialPrice();
+            
+            // Show initial price and reveal UI
+            if (initialPrice !== null) {
+                previousPrice = initialPrice;
+                updatePriceDisplay(initialPrice);
+                // Don't add initial price to chart, wait for first WebSocket update
+                document.title = `$${formatPrice(initialPrice)} · STRK`;
+            }
+            
+            revealUI();
+            
+            // Connect WebSocket for live updates
+            connectPriceStream();
+        }
+
+        init();
+    </script>
+</body>
+</html>
