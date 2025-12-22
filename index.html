@@ -187,8 +187,8 @@
     <script>
         // STRK Price App - Custom Bar Chart
 
-        // Binance WebSocket for real-time price (ticker updates every second)
-        const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/strkusdt@ticker';
+        // Binance WebSocket for real-time price (trade stream updates on every trade - fastest)
+        const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/strkusdt@trade';
 
         // CoinGecko for initial price
         const COINGECKO_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=starknet&vs_currencies=usd';
@@ -359,8 +359,8 @@
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                // Ticker stream uses 'c' for current price (last trade price)
-                const price = parseFloat(data.c);
+                // Trade stream uses 'p' for trade price (updates on every trade)
+                const price = parseFloat(data.p);
                 
                 // Flash color on price change
                 if (previousPrice !== null && price !== previousPrice) {
