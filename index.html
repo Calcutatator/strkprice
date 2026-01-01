@@ -84,11 +84,13 @@
             width: 100%;
             max-width: 600px;
             opacity: 0;
-            transition: opacity 0.3s ease;
+            transform: translateY(20px);
+            transition: opacity 0.4s ease, transform 0.4s ease;
         }
 
         .container.ready {
             opacity: 1;
+            transform: translateY(0);
         }
 
         .tagline {
@@ -225,6 +227,64 @@
             transform: translateY(-50%);
             z-index: 1;
         }
+
+        .view-toggle {
+            position: fixed;
+            bottom: 32px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 100px;
+            color: rgba(255, 255, 255, 0.6);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 13px;
+            font-weight: 400;
+            letter-spacing: 0.02em;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            z-index: 50;
+        }
+
+        .view-toggle:hover {
+            border-color: rgba(255, 255, 255, 0.4);
+            color: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .view-toggle:active {
+            transform: translateX(-50%) scale(0.98);
+        }
+
+        .toggle-arrow {
+            width: 14px;
+            height: 14px;
+            transition: transform 0.3s ease;
+        }
+
+        .view-toggle.flipped .toggle-arrow {
+            transform: rotate(180deg);
+        }
+
+        .toggle-text {
+            transition: opacity 0.2s ease;
+        }
+
+        body.page-transitioning .container {
+            opacity: 0;
+            transform: translateY(40px);
+        }
+
+        body.page-transitioning .view-toggle {
+            opacity: 0;
+            transform: translate(-50%, 30px);
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -244,6 +304,12 @@
             </div>
         </div>
     </main>
+    <a class="view-toggle" href="steaked.html">
+        <span class="toggle-text">BTC</span>
+        <svg class="toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 17L17 7M17 7H7M17 7V17" />
+        </svg>
+    </a>
     <script>
         // STRK Price App - Custom Bar Chart
 
@@ -486,6 +552,27 @@
         }
 
         init();
+
+        // Page transition like zecprice toggle animation
+        const navToggle = document.querySelector('.view-toggle');
+        if (navToggle) {
+            const triggerNavigation = (target) => {
+                document.body.classList.add('page-transitioning');
+                setTimeout(() => {
+                    window.location.href = target;
+                }, 400);
+            };
+
+            navToggle.addEventListener('click', (event) => {
+                const isModifiedClick = event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0;
+                if (isModifiedClick) return; // let browser handle new tab/window behaviour
+
+                event.preventDefault();
+                const target = navToggle.getAttribute('href');
+                if (!target) return;
+                triggerNavigation(target);
+            });
+        }
     </script>
 </body>
 </html>
