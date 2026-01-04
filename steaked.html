@@ -251,13 +251,17 @@
 
     <script>
         const CHAIN_ASSETS_URL = 'https://api.llama.fi/chainAssets';
-        const BTC_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+        const BINANCE_PRICE_URL = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT';
+        const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
         const BTC_SYMBOL_PATTERN = /btc/i;
         const POLL_INTERVAL = 5 * 60 * 1000;
 
         let pollTimer = null;
         let ambientTimer = null;
         let lastBtcValue = null;
+        let latestBtcUsdTotal = null;
+        let latestBtcUsdPrice = null;
+        let priceSocket = null;
 
         const valueEl = document.getElementById('shielded-value');
         const circleEl = document.getElementById('btc-circle');
@@ -294,12 +298,12 @@
         const formatBtc = (value) => {
             if (!isFinite(value)) return '--';
             if (value >= 1000) {
-                return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+                return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             }
             if (value >= 1) {
-                return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+                return value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
             }
-            return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
+            return value.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 });
         };
 
         const updateHeadline = (btcValue) => {
@@ -316,6 +320,13 @@
             lastBtcValue = btcValue;
         };
 
+        const updateBtcValue = () => {
+            if (!isFinite(latestBtcUsdTotal) || !isFinite(latestBtcUsdPrice) || latestBtcUsdPrice <= 0) {
+                return;
+            }
+            updateHeadline(latestBtcUsdTotal / latestBtcUsdPrice);
+        };
+
         const sumStarknetBtcUsd = (payload) => {
             const breakdown = payload?.Starknet?.canonical?.breakdown;
             if (!breakdown) return 0;
@@ -326,18 +337,10 @@
             }, 0);
         };
 
-        const fetchStatsSnapshot = async () => {
-            const [assetsRes, priceRes] = await Promise.all([
-                fetch(CHAIN_ASSETS_URL),
-                fetch(BTC_PRICE_URL)
-            ]);
-
+        const fetchStarknetBtcUsdTotal = async () => {
+            const assetsRes = await fetch(CHAIN_ASSETS_URL);
             if (!assetsRes.ok) {
                 throw new Error('Unable to fetch Starknet chain assets');
-            }
-
-            if (!priceRes.ok) {
-                throw new Error('Unable to fetch BTC price');
             }
 
             const assetsPayload = await assetsRes.json();
@@ -346,29 +349,77 @@
                 throw new Error('BTC breakdown missing for Starknet');
             }
 
-            const pricePayload = await priceRes.json();
-            const spotPrice = pricePayload?.bitcoin?.usd ?? null;
-            if (!spotPrice) {
-                throw new Error('BTC price unavailable');
+            return btcUsdTotal;
+        };
+
+        const fetchInitialBtcPrice = async () => {
+            try {
+                const priceRes = await fetch(BINANCE_PRICE_URL);
+                if (!priceRes.ok) {
+                    throw new Error('Unable to fetch Binance BTC price');
+                }
+                const payload = await priceRes.json();
+                const price = parseFloat(payload?.price);
+                return Number.isFinite(price) ? price : null;
+            } catch (error) {
+                console.error('Failed to fetch initial BTC price', error);
+                return null;
+            }
+        };
+
+        const connectBtcPriceStream = () => {
+            if (priceSocket) {
+                priceSocket.close();
             }
 
-            return btcUsdTotal / spotPrice;
+            priceSocket = new WebSocket(BINANCE_WS_URL);
+
+            priceSocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const price = parseFloat(data?.p);
+                if (!Number.isFinite(price)) return;
+                latestBtcUsdPrice = price;
+                updateBtcValue();
+            };
+
+            priceSocket.onclose = () => {
+                priceSocket = null;
+                setTimeout(connectBtcPriceStream, 1000);
+            };
+
+            priceSocket.onerror = (error) => {
+                console.error('BTC price WebSocket error', error);
+                if (priceSocket) {
+                    priceSocket.close();
+                }
+            };
         };
 
         const refreshData = async () => {
             try {
-                const btcValue = await fetchStatsSnapshot();
-                updateHeadline(btcValue);
+                const btcUsdTotal = await fetchStarknetBtcUsdTotal();
+                latestBtcUsdTotal = btcUsdTotal;
+                updateBtcValue();
             } catch (error) {
                 console.error('Failed to load BTC snapshot', error);
                 valueEl.textContent = '--';
             }
         };
 
+        const initPriceFeed = async () => {
+            const initialPrice = await fetchInitialBtcPrice();
+            if (initialPrice) {
+                latestBtcUsdPrice = initialPrice;
+                updateBtcValue();
+            }
+            connectBtcPriceStream();
+        };
+
         window.addEventListener('DOMContentLoaded', () => {
             refreshData();
             pollTimer = setInterval(refreshData, POLL_INTERVAL);
             scheduleAmbientPulse();
+            initPriceFeed();
 
             requestAnimationFrame(() => {
                 document.body.classList.add('ready');
@@ -381,6 +432,9 @@
             }
             if (ambientTimer) {
                 clearTimeout(ambientTimer);
+            }
+            if (priceSocket) {
+                priceSocket.close();
             }
         });
     </script>
