@@ -256,7 +256,7 @@
           </linearGradient>
         </defs>
       </svg>
-      <div class="empty-state" id="empty-state">Pool launches soon. Data populates from launch.</div>
+      <div class="empty-state" id="empty-state">Loading snapshots&hellip;</div>
     </div>
   </div>
 </main>
@@ -421,10 +421,11 @@ async function loadHistory() {
 }
 
 function renderChart(points, currentBtc) {
-  // If we have a live value but no history yet, plot a single point so the
-  // chart isn't completely empty after launch day.
+  // Always append the live reading so the chart has at least one segment
+  // (history + now) even when total_supply hasn't changed since the last
+  // snapshot. Same timestamp twice would collapse, but Date.now() advances.
   const series = points.slice();
-  if (currentBtc != null && (series.length === 0 || series[series.length - 1].btc !== currentBtc)) {
+  if (currentBtc != null) {
     series.push({ t: Date.now(), btc: currentBtc });
   }
 

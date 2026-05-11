@@ -103,13 +103,10 @@ jobs:
               "btc":    btc,
           }
 
-          # Skip writing duplicate consecutive snapshots (no change).
-          if data and data[-1].get("supply") == entry["supply"]:
-              print(f"No change since last snapshot ({entry['btc']} BTC). Skipping write.")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("changed=false\n")
-              sys.exit(0)
-
+          # Always record the snapshot. A flat time-series is meaningful for
+          # the chart (a flat line means TVL was steady), and skipping writes
+          # when supply is unchanged left the chart with no second point to
+          # render between TVL movements.
           data.append(entry)
           with open(path, "w") as f:
               json.dump(data, f, indent=2)
