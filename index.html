@@ -183,6 +183,47 @@
     padding: 0 16px;
   }
 
+  /* Hover inspector */
+  .hover-line {
+    stroke: rgba(255,255,255,0.25);
+    stroke-width: 1;
+    stroke-dasharray: 2 4;
+    pointer-events: none;
+  }
+  .hover-dot {
+    fill: #fff;
+    pointer-events: none;
+  }
+  .hover-tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(20, 20, 20, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: #fff;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 10;
+    text-align: center;
+    transform: translate(-50%, -100%);
+  }
+  .hover-tooltip.visible {
+    opacity: 1;
+  }
+  .hover-date {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 12px;
+    margin-bottom: 4px;
+    letter-spacing: 0.02em;
+  }
+  .hover-value {
+    font-size: 15px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+  }
+
   /* Bottom toggle pill */
   .view-toggle {
     position: fixed;
@@ -255,8 +296,14 @@
             <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
           </linearGradient>
         </defs>
+        <line class="hover-line" id="hover-line" style="display:none" />
+        <circle class="hover-dot" id="hover-dot" r="4" style="display:none" />
       </svg>
       <div class="empty-state" id="empty-state">Loading snapshots&hellip;</div>
+      <div class="hover-tooltip" id="hover-tooltip">
+        <div class="hover-date" id="hover-date"></div>
+        <div class="hover-value" id="hover-value"></div>
+      </div>
     </div>
   </div>
 </main>
@@ -420,6 +467,8 @@ async function loadHistory() {
   }
 }
 
+let chartState = null;
+
 function renderChart(points, currentBtc) {
   // Always append the live reading so the chart has at least one segment
   // (history + now) even when total_supply hasn't changed since the last
@@ -429,11 +478,12 @@ function renderChart(points, currentBtc) {
     series.push({ t: Date.now(), btc: currentBtc });
   }
 
-  // Clear chart content but keep <defs>
+  // Clear chart content but keep <defs> and hover elements
   Array.from(chartEl.querySelectorAll('g.layer')).forEach(n => n.remove());
 
   if (series.length < 2) {
     emptyEl.style.display = 'flex';
+    chartState = null;
     return;
   }
   emptyEl.style.display = 'none';
@@ -511,6 +561,72 @@ function renderChart(points, currentBtc) {
   layer.appendChild(area);
 
   chartEl.appendChild(layer);
+
+  // Stash for the hover handler (which reads the latest state each mousemove).
+  chartState = { series, x, y, W, H, padT, padB };
+}
+
+function setupChartHover() {
+  const wrapper  = document.querySelector('.chart-wrapper');
+  const tooltip  = document.getElementById('hover-tooltip');
+  const dateEl   = document.getElementById('hover-date');
+  const valueEl  = document.getElementById('hover-value');
+  const hLine    = document.getElementById('hover-line');
+  const hDot     = document.getElementById('hover-dot');
+  if (!wrapper || !tooltip) return;
+
+  const fmtFullDate = ts => new Date(ts).toLocaleDateString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric'
+  });
+
+  const hide = () => {
+    hLine.style.display = 'none';
+    hDot.style.display  = 'none';
+    tooltip.classList.remove('visible');
+  };
+
+  wrapper.addEventListener('mousemove', e => {
+    if (!chartState) return;
+    const { series, x, y, W, H, padT, padB } = chartState;
+    const rect = wrapper.getBoundingClientRect();
+    if (rect.width === 0) return;
+
+    // Mouse position in SVG viewBox space
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+
+    // Nearest data point by SVG-space x distance
+    let nearest = 0;
+    let minDist = Infinity;
+    for (let i = 0; i < series.length; i++) {
+      const d = Math.abs(x(series[i].t) - svgX);
+      if (d < minDist) { minDist = d; nearest = i; }
+    }
+    const p  = series[nearest];
+    const px = x(p.t);
+    const py = y(p.btc);
+
+    hLine.setAttribute('x1', px);
+    hLine.setAttribute('x2', px);
+    hLine.setAttribute('y1', padT);
+    hLine.setAttribute('y2', H - padB);
+    hLine.style.display = '';
+
+    hDot.setAttribute('cx', px);
+    hDot.setAttribute('cy', py);
+    hDot.style.display = '';
+
+    // SVG → CSS pixel coords for HTML tooltip placement
+    const htmlX = (px / W) * rect.width;
+    const htmlY = (py / H) * rect.height;
+    tooltip.style.left = `${htmlX}px`;
+    tooltip.style.top  = `${Math.max(htmlY - 16, 30)}px`;
+
+    dateEl.textContent  = fmtFullDate(p.t);
+    valueEl.textContent = `${formatBtc(p.btc)} BTC`;
+    tooltip.classList.add('visible');
+  });
+
+  wrapper.addEventListener('mouseleave', hide);
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +648,7 @@ async function tick(history) {
 (async function init() {
   const history = await loadHistory();
   await tick(history);
+  setupChartHover();
   setInterval(() => tick(history), POLL_INTERVAL_MS);
 })();
 
