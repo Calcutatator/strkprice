@@ -1,0 +1,135 @@
+name: Snapshot strkBTC TVL
+
+# Records strkBTC total_supply() on Starknet mainnet every hour and commits
+# the result to data/strkbtc-tvl.json so the shielded page can render a
+# historical line chart.
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour, on the hour
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot-strkbtc
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch total_supply and append to data file
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          CONTRACT  = "0x0787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135"
+          SELECTOR  = "0x01557182e4359a1f0c6301278e8f5b35a776ab58d39892581e357578fb287836"  # total_supply
+          DECIMALS  = 8
+          RPCS = [
+              "https://rpc.starknet.lava.build",
+              "https://starknet-mainnet.g.alchemy.com/starknet/version/rpc/v0_7/demo",
+              "https://free-rpc.nethermind.io/mainnet-juno",
+          ]
+
+          payload = json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "starknet_call",
+              "params": {
+                  "request": {
+                      "contract_address": CONTRACT,
+                      "entry_point_selector": SELECTOR,
+                      "calldata": []
+                  },
+                  "block_id": "latest"
+              }
+          }).encode()
+
+          result = None
+          last_err = None
+          for url in RPCS:
+              try:
+                  req = urllib.request.Request(
+                      url,
+                      data=payload,
+                      headers={"Content-Type": "application/json"},
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      body = json.loads(r.read())
+                  if "error" in body:
+                      last_err = body["error"].get("message", "rpc error")
+                      continue
+                  result = body["result"]
+                  break
+              except (urllib.error.URLError, TimeoutError) as e:
+                  last_err = str(e)
+                  continue
+
+          if result is None:
+              print(f"All RPCs failed. Last error: {last_err}", file=sys.stderr)
+              sys.exit(1)
+
+          low  = int(result[0], 16)
+          high = int(result[1], 16) if len(result) > 1 else 0
+          raw  = (high << 128) + low
+          btc  = round(raw / (10 ** DECIMALS), 8)
+
+          os.makedirs("data", exist_ok=True)
+          path = "data/strkbtc-tvl.json"
+          try:
+              with open(path) as f:
+                  data = json.load(f)
+              if not isinstance(data, list):
+                  data = []
+          except (FileNotFoundError, json.JSONDecodeError):
+              data = []
+
+          entry = {
+              "t":      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "supply": str(raw),  # store as string so JSON never loses precision
+              "btc":    btc,
+          }
+
+          # Skip writing duplicate consecutive snapshots (no change).
+          if data and data[-1].get("supply") == entry["supply"]:
+              print(f"No change since last snapshot ({entry['btc']} BTC). Skipping write.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("changed=false\n")
+              sys.exit(0)
+
+          data.append(entry)
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+
+          print(f"Recorded {entry['btc']} BTC at {entry['t']}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("changed=true\n")
+          PY
+        id: snapshot
+
+      - name: Commit and push
+        if: steps.snapshot.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/strkbtc-tvl.json
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "data: snapshot strkBTC TVL"
+          git push
