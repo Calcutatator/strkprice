@@ -6,7 +6,7 @@ name: Snapshot strkBTC TVL
 
 on:
   schedule:
-    - cron: '0 * * * *'   # every hour, on the hour
+    - cron: '*/5 * * * *'  # every 5 minutes — GitHub Actions' cron floor
   workflow_dispatch:        # allow manual runs from the Actions tab
 
 permissions:
