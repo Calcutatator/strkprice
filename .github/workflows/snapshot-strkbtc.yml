@@ -28,64 +28,63 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Fetch total_supply and append to data file
+      - name: Fetch supply + shielded balance, append to data file
         run: |
           python3 - <<'PY'
           import json, os, sys, urllib.request, urllib.error
           from datetime import datetime, timezone
 
-          CONTRACT  = "0x0787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135"
-          SELECTOR  = "0x01557182e4359a1f0c6301278e8f5b35a776ab58d39892581e357578fb287836"  # total_supply
-          DECIMALS  = 8
+          STRKBTC      = "0x0787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135"
+          POOL         = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a"
+          TOTAL_SUPPLY = "0x01557182e4359a1f0c6301278e8f5b35a776ab58d39892581e357578fb287836"
+          BALANCE_OF   = "0x035a73cd311a05d46deda634c5ee045db92f811b4e74bca4437fcb5302b7af33"
+          DECIMALS     = 8
           RPCS = [
               "https://rpc.starknet.lava.build",
               "https://starknet-mainnet.g.alchemy.com/starknet/version/rpc/v0_7/demo",
               "https://free-rpc.nethermind.io/mainnet-juno",
           ]
 
-          payload = json.dumps({
-              "jsonrpc": "2.0",
-              "id": 1,
-              "method": "starknet_call",
-              "params": {
-                  "request": {
-                      "contract_address": CONTRACT,
-                      "entry_point_selector": SELECTOR,
-                      "calldata": []
-                  },
-                  "block_id": "latest"
-              }
-          }).encode()
-
-          result = None
-          last_err = None
-          for url in RPCS:
-              try:
-                  req = urllib.request.Request(
-                      url,
-                      data=payload,
-                      headers={"Content-Type": "application/json"},
-                      method="POST"
-                  )
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      body = json.loads(r.read())
-                  if "error" in body:
-                      last_err = body["error"].get("message", "rpc error")
+          def rpc_call(selector, calldata):
+              payload = json.dumps({
+                  "jsonrpc": "2.0", "id": 1, "method": "starknet_call",
+                  "params": {
+                      "request": {
+                          "contract_address": STRKBTC,
+                          "entry_point_selector": selector,
+                          "calldata": calldata,
+                      },
+                      "block_id": "latest"
+                  }
+              }).encode()
+              last_err = None
+              for url in RPCS:
+                  try:
+                      req = urllib.request.Request(
+                          url, data=payload,
+                          headers={"Content-Type": "application/json"},
+                          method="POST"
+                      )
+                      with urllib.request.urlopen(req, timeout=15) as r:
+                          body = json.loads(r.read())
+                      if "error" in body:
+                          last_err = body["error"].get("message", "rpc error")
+                          continue
+                      return body["result"]
+                  except (urllib.error.URLError, TimeoutError) as e:
+                      last_err = str(e)
                       continue
-                  result = body["result"]
-                  break
-              except (urllib.error.URLError, TimeoutError) as e:
-                  last_err = str(e)
-                  continue
+              raise RuntimeError(f"All RPCs failed. Last error: {last_err}")
 
-          if result is None:
-              print(f"All RPCs failed. Last error: {last_err}", file=sys.stderr)
-              sys.exit(1)
+          def parse_u256(result):
+              low  = int(result[0], 16)
+              high = int(result[1], 16) if len(result) > 1 else 0
+              return (high << 128) + low
 
-          low  = int(result[0], 16)
-          high = int(result[1], 16) if len(result) > 1 else 0
-          raw  = (high << 128) + low
-          btc  = round(raw / (10 ** DECIMALS), 8)
+          supply_raw   = parse_u256(rpc_call(TOTAL_SUPPLY, []))
+          shielded_raw = parse_u256(rpc_call(BALANCE_OF, [POOL]))
+          wrapped_btc  = round(supply_raw   / (10 ** DECIMALS), 8)
+          shielded_btc = round(shielded_raw / (10 ** DECIMALS), 8)
 
           os.makedirs("data", exist_ok=True)
           path = "data/strkbtc-tvl.json"
@@ -98,21 +97,19 @@ jobs:
               data = []
 
           entry = {
-              "t":      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "supply": str(raw),  # store as string so JSON never loses precision
-              "btc":    btc,
+              "t":               datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "supply":          str(supply_raw),    # u256 string, never loses precision
+              "btc":             wrapped_btc,
+              "shielded_supply": str(shielded_raw),
+              "shielded_btc":    shielded_btc,
           }
 
-          # Always record the snapshot. A flat time-series is meaningful for
-          # the chart (a flat line means TVL was steady), and skipping writes
-          # when supply is unchanged left the chart with no second point to
-          # render between TVL movements.
           data.append(entry)
           with open(path, "w") as f:
               json.dump(data, f, indent=2)
               f.write("\n")
 
-          print(f"Recorded {entry['btc']} BTC at {entry['t']}")
+          print(f"Recorded shielded={shielded_btc} BTC / wrapped={wrapped_btc} BTC at {entry['t']}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("changed=true\n")
           PY
