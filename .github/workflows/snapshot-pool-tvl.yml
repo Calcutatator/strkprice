@@ -41,6 +41,7 @@ jobs:
           POOL = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a"
           VOYAGER_URL = f"https://api.voyager.online/beta/contracts/{POOL}/token-balances"
           DEFILLAMA_URL = "https://api.llama.fi/v2/chains"
+          GECKO_URL = "https://api.geckoterminal.com/api/v2/simple/networks/starknet-alpha/token_price/"
 
           key = os.environ.get("VOYAGER_API_KEY")
           if not key:
@@ -65,16 +66,60 @@ jobs:
               sys.exit(1)
 
           balances = v.get("erc20TokenBalances") or []
-          usd = 0.0
-          for t in balances:
+
+          def emptyish(x):
+              return x is None or str(x).strip() == ""
+
+          def norm(a):
+              return "0x" + str(a).lower().replace("0x", "", 1).lstrip("0")
+
+          def to_dec(d):
+              s = str(d)
+              return int(s, 16) if s.startswith("0x") else int(s)
+
+          # Voyager intermittently returns a null price + empty usdBalance for some
+          # tokens (e.g. WBTC, xSTRK) while still reporting their balance, which would
+          # record a false dip. Fill those prices from GeckoTerminal (keyless, by
+          # address); everything Voyager prices stays Voyager.
+          need = [t["address"] for t in balances
+                  if emptyish(t.get("price")) and emptyish(t.get("usdBalance"))]
+          gecko = {}
+          if need:
               try:
-                  usd += float(t.get("usdBalance") or 0)
-              except (TypeError, ValueError):
-                  pass
+                  gd = get_json(GECKO_URL + ",".join(need), {"accept": "application/json"})
+                  prices = (gd.get("data", {}).get("attributes", {}).get("token_prices", {})) or {}
+                  for k, val in prices.items():
+                      try:
+                          p = float(val)
+                          if p > 0:
+                              gecko[norm(k)] = p
+                      except (TypeError, ValueError):
+                          pass
+              except Exception as e:
+                  print(f"GeckoTerminal fallback failed: {e}", file=sys.stderr)
+
+          usd = 0.0
+          unpriced = []
+          for t in balances:
+              vu = None if emptyish(t.get("usdBalance")) else float(t["usdBalance"])
+              if vu is not None:
+                  usd += vu
+                  continue
+              vp = None if emptyish(t.get("price")) else float(t["price"])
+              price = gecko.get(norm(t["address"])) or vp
+              if price:
+                  try:
+                      usd += (int(t["balance"]) / 10 ** to_dec(t["decimals"])) * price
+                  except (TypeError, ValueError, KeyError):
+                      unpriced.append(t.get("symbol"))
+              else:
+                  unpriced.append(t.get("symbol"))
 
           if usd <= 0:
               print("Pool USD value is 0 — skipping write.", file=sys.stderr)
               sys.exit(1)
+          if unpriced:
+              print(f"Note: tokens left unpriced (negligible): {unpriced}", file=sys.stderr)
 
           # --- Starknet total TVL (DeFiLlama) ---
           starknet_tvl = None

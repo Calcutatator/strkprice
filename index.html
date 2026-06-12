@@ -93,13 +93,14 @@
     margin-bottom: 14px;
     text-transform: uppercase;
   }
+  .shielded-label .pct { margin-right: 8px; opacity: 0.85; }
 
   .price-wrapper {
     display: inline-flex;
     align-items: baseline;
     justify-content: center;
     gap: 14px;
-    margin-bottom: 18px;
+    margin-bottom: 32px;
   }
   .price {
     font-size: clamp(52px, 10vw, 92px);
@@ -111,20 +112,6 @@
   /* Flash colours when the total value moves */
   .price.flash-up   { color: #22c55e; transition: color 0.8s ease; }
   .price.flash-down { color: #ef4444; transition: color 0.8s ease; }
-
-  .range-pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 8px 16px;
-    border: 1px solid rgba(255,255,255,0.22);
-    border-radius: 100px;
-    background: rgba(255,255,255,0.04);
-    color: rgba(255,255,255,0.85);
-    font-size: 13px;
-    letter-spacing: 0.02em;
-    margin-bottom: 32px;
-  }
-  .range-pill .pct { font-weight: 500; margin-right: 6px; opacity: 0.95; }
 
   /* Chart */
   .chart-wrapper {
@@ -271,11 +258,12 @@
 
 <main>
   <div class="container">
-    <div class="shielded-label">Total value shielded</div>
+    <div class="shielded-label">
+      <span class="pct" id="pct">--</span><span>of Starknet</span>
+    </div>
     <div class="price-wrapper">
       <span class="price" id="price">--</span>
     </div>
-    <div class="range-pill"><span class="pct" id="pct">--</span> of Starknet TVL</div>
 
     <div class="chart-wrapper">
       <svg class="chart" id="chart" viewBox="0 0 800 350" preserveAspectRatio="none">

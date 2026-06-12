@@ -22,6 +22,7 @@ const POOL_ADDRESS =
 
 const VOYAGER_URL = `https://api.voyager.online/beta/contracts/${POOL_ADDRESS}/token-balances`;
 const DEFILLAMA_URL = 'https://api.llama.fi/v2/chains';
+const GECKOTERMINAL_URL = 'https://api.geckoterminal.com/api/v2/simple/networks/starknet-alpha/token_price/';
 
 const CACHE_MS = Number(process.env.CACHE_MS || 20_000); // 20s
 const FETCH_TIMEOUT_MS = 12_000;
@@ -72,6 +73,48 @@ async function getStarknetTvl() {
   }
 }
 
+// Normalise a Starknet address for matching (lowercase, strip leading zeros).
+function normAddr(a) {
+  if (!a) return '';
+  return '0x' + String(a).toLowerCase().replace(/^0x/, '').replace(/^0+/, '');
+}
+
+function toDecimals(d) {
+  if (d == null) return 18;
+  const s = String(d);
+  return s.startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
+}
+
+function emptyish(v) {
+  return v == null || String(v).trim() === '';
+}
+
+// Last-known good price per token address — tertiary fallback so a token that
+// both Voyager and GeckoTerminal momentarily fail to price keeps its value.
+const lastPrice = new Map();
+
+// GeckoTerminal price fallback (keyless, by contract address). Voyager's price
+// feed intermittently drops individual tokens (e.g. WBTC, xSTRK) for extended
+// periods — returning their balance but a null price/usdBalance — which would
+// otherwise swing the pool total by tens of thousands of dollars. We only use
+// this for the tokens Voyager fails to price; everything else stays Voyager.
+async function getGeckoPrices(addresses) {
+  if (!addresses.length) return {};
+  try {
+    const data = await fetchJson(GECKOTERMINAL_URL + addresses.join(','), { accept: 'application/json' });
+    const raw = data?.data?.attributes?.token_prices || {};
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const p = parseFloat(v);
+      if (isFinite(p) && p > 0) out[normAddr(k)] = p;
+    }
+    return out;
+  } catch (e) {
+    console.warn('GeckoTerminal fallback failed:', e.message);
+    return {};
+  }
+}
+
 async function computePool() {
   if (!VOYAGER_API_KEY) throw new Error('VOYAGER_API_KEY not configured');
 
@@ -84,17 +127,42 @@ async function computePool() {
     ? voyager.erc20TokenBalances
     : [];
 
+  // Tokens Voyager couldn't price (null price AND empty usdBalance) → GeckoTerminal.
+  const needPrice = balances
+    .filter((t) => emptyish(t.price) && emptyish(t.usdBalance))
+    .map((t) => t.address);
+  const gecko = await getGeckoPrices(needPrice);
+
   let usd = 0;
+  const unpriced = [];
   const tokens = [];
   for (const t of balances) {
-    const u = parseFloat(t.usdBalance || '0') || 0;
+    const key = normAddr(t.address);
+    const voyPrice = emptyish(t.price) ? null : Number(t.price);
+    const voyUsd = emptyish(t.usdBalance) ? null : parseFloat(t.usdBalance);
+    let u;
+
+    if (voyUsd != null && isFinite(voyUsd)) {
+      // Voyager priced it — trust Voyager exactly so the total matches Voyager.
+      u = voyUsd;
+      if (voyPrice) lastPrice.set(key, voyPrice);
+    } else {
+      // Voyager couldn't price it — GeckoTerminal, then last-known price.
+      const price = gecko[key] ?? voyPrice ?? lastPrice.get(key);
+      if (price && isFinite(price)) {
+        u = (Number(t.balance) / 10 ** toDecimals(t.decimals)) * price;
+        lastPrice.set(key, price);
+      } else {
+        u = 0;
+        unpriced.push(t.symbol);
+      }
+    }
     usd += u;
-    tokens.push({ symbol: t.symbol, address: t.address, usd: u, price: t.price ?? null });
+    tokens.push({ symbol: t.symbol, address: t.address, usd: u });
   }
   tokens.sort((a, b) => b.usd - a.usd);
 
-  const pct =
-    starknetTvl && starknetTvl > 0 ? (usd / starknetTvl) * 100 : null;
+  const pct = starknetTvl && starknetTvl > 0 ? (usd / starknetTvl) * 100 : null;
 
   return {
     t: new Date().toISOString(),
@@ -102,6 +170,7 @@ async function computePool() {
     starknet_tvl: starknetTvl,
     pct,
     tokenCount: tokens.length,
+    unpriced,
     tokens,
   };
 }
