@@ -1,0 +1,125 @@
+name: Snapshot pool TVL
+
+# Records the total USD value of every asset held in the Starknet privacy pool
+# (via Voyager) plus Starknet's total TVL (via DeFiLlama) every hour, and commits
+# the result to data/pool-tvl.json so the shielded page can render a historical
+# USD line chart. The live number on the page comes from the Railway proxy; this
+# job only builds the chart history.
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour, on the hour
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot-pool-tvl
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch pool USD value and append to data file
+        env:
+          VOYAGER_API_KEY: ${{ secrets.VOYAGER_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          POOL = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a"
+          VOYAGER_URL = f"https://api.voyager.online/beta/contracts/{POOL}/token-balances"
+          DEFILLAMA_URL = "https://api.llama.fi/v2/chains"
+
+          key = os.environ.get("VOYAGER_API_KEY")
+          if not key:
+              print("VOYAGER_API_KEY secret not set", file=sys.stderr)
+              sys.exit(1)
+
+          def get_json(url, headers=None):
+              req = urllib.request.Request(url, headers=headers or {}, method="GET")
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read())
+
+          # --- pool total USD (sum of every token's usdBalance) ---
+          try:
+              v = get_json(VOYAGER_URL, {"accept": "application/json", "x-api-key": key})
+          except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+              print(f"Voyager request failed: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          balances = v.get("erc20TokenBalances") or []
+          usd = 0.0
+          for t in balances:
+              try:
+                  usd += float(t.get("usdBalance") or 0)
+              except (TypeError, ValueError):
+                  pass
+
+          if usd <= 0:
+              print("Pool USD value is 0 — skipping write.", file=sys.stderr)
+              sys.exit(1)
+
+          # --- Starknet total TVL (DeFiLlama) ---
+          starknet_tvl = None
+          try:
+              chains = get_json(DEFILLAMA_URL)
+              s = next((c for c in chains if (c.get("name") or "").lower() == "starknet"), None)
+              if s and isinstance(s.get("tvl"), (int, float)):
+                  starknet_tvl = float(s["tvl"])
+          except Exception as e:
+              print(f"DeFiLlama TVL failed (continuing without pct): {e}", file=sys.stderr)
+
+          pct = round(usd / starknet_tvl * 100, 6) if starknet_tvl else None
+
+          entry = {
+              "t": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "usd": round(usd, 2),
+              "starknet_tvl": round(starknet_tvl, 2) if starknet_tvl else None,
+              "pct": pct,
+          }
+
+          os.makedirs("data", exist_ok=True)
+          path = "data/pool-tvl.json"
+          try:
+              with open(path) as f:
+                  data = json.load(f)
+              if not isinstance(data, list):
+                  data = []
+          except (FileNotFoundError, json.JSONDecodeError):
+              data = []
+
+          data.append(entry)
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+
+          print(f"Recorded ${entry['usd']:,.2f} ({entry['pct']}% of Starknet TVL) at {entry['t']}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("changed=true\n")
+          PY
+        id: snapshot
+
+      - name: Commit and push
+        if: steps.snapshot.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/pool-tvl.json
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "data: snapshot pool TVL"
+          git push

@@ -1,0 +1,14 @@
+{
+  "name": "strkprice-pool-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny proxy that returns the Starknet privacy pool's total USD value (via Voyager) for strkprice.com",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

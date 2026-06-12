@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>strkBTC</title>
+<title>Shielded TVL · strkprice</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -93,32 +93,22 @@
     margin-bottom: 14px;
     text-transform: uppercase;
   }
-  .shielded-label .pct {
-    margin-right: 8px;
-    opacity: 0.85;
-  }
 
   .price-wrapper {
     display: inline-flex;
     align-items: baseline;
     justify-content: center;
     gap: 14px;
-    margin-bottom: 22px;
+    margin-bottom: 18px;
   }
   .price {
-    font-size: clamp(56px, 11vw, 96px);
+    font-size: clamp(52px, 10vw, 92px);
     font-weight: 200;
     letter-spacing: -0.02em;
     line-height: 1;
   }
-  .price-suffix {
-    font-size: 22px;
-    font-weight: 300;
-    letter-spacing: 0.18em;
-    opacity: 0.55;
-  }
 
-  /* Flash colours when total_supply moves */
+  /* Flash colours when the total value moves */
   .price.flash-up   { color: #22c55e; transition: color 0.8s ease; }
   .price.flash-down { color: #ef4444; transition: color 0.8s ease; }
 
@@ -134,6 +124,7 @@
     letter-spacing: 0.02em;
     margin-bottom: 32px;
   }
+  .range-pill .pct { font-weight: 500; margin-right: 6px; opacity: 0.95; }
 
   /* Chart */
   .chart-wrapper {
@@ -280,13 +271,11 @@
 
 <main>
   <div class="container">
-    <div class="shielded-label">
-      <span class="pct" id="pct">--</span><span>SHIELDED</span>
-    </div>
+    <div class="shielded-label">Total value shielded</div>
     <div class="price-wrapper">
       <span class="price" id="price">--</span>
-      <span class="price-suffix">BTC</span>
     </div>
+    <div class="range-pill"><span class="pct" id="pct">--</span> of Starknet TVL</div>
 
     <div class="chart-wrapper">
       <svg class="chart" id="chart" viewBox="0 0 800 350" preserveAspectRatio="none">
@@ -299,7 +288,7 @@
         <line class="hover-line" id="hover-line" style="display:none" />
         <circle class="hover-dot" id="hover-dot" r="4" style="display:none" />
       </svg>
-      <div class="empty-state" id="empty-state">Loading snapshots&hellip;</div>
+      <div class="empty-state" id="empty-state">Loading&hellip;</div>
       <div class="hover-tooltip" id="hover-tooltip">
         <div class="hover-date" id="hover-date"></div>
         <div class="hover-value" id="hover-value"></div>
@@ -317,27 +306,19 @@
 
 <script>
 // ============================================================================
-// strkBTC shielded TVL — reads total_supply() directly from the strkBTC ERC-20
-// on Starknet mainnet, then a historical chart from data/strkbtc-tvl.json
-// (populated by .github/workflows/snapshot.yml).
+// Shielded pool TVL — total USD value of every asset held in the Starknet
+// privacy pool. The live number comes from a tiny server-side proxy that calls
+// Voyager with an API key (kept off the client); the historical line comes from
+// data/pool-tvl.json, which an hourly GitHub Action appends to.
+//
+//   live number + %  <- GET {POOL_API}        (Voyager-exact, ~30s refresh)
+//   chart history    <- data/pool-tvl.json     (hourly snapshots)
 // ============================================================================
 
-const STRKBTC_CONTRACT = '0x0787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135';
-const POOL_ADDRESS     = '0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a';
-// Cairo 1 snake_case selectors = starknet_keccak(...)
-const TOTAL_SUPPLY_SELECTOR = '0x01557182e4359a1f0c6301278e8f5b35a776ab58d39892581e357578fb287836';
-const BALANCE_OF_SELECTOR   = '0x035a73cd311a05d46deda634c5ee045db92f811b4e74bca4437fcb5302b7af33';
-const DECIMALS = 8;
-
-// Public Starknet JSON-RPC endpoints. Try in order; first that responds wins.
-const RPC_URLS = [
-  'https://rpc.starknet.lava.build',
-  'https://starknet-mainnet.g.alchemy.com/starknet/version/rpc/v0_7/demo',
-  'https://free-rpc.nethermind.io/mainnet-juno'
-];
-
-const POLL_INTERVAL_MS = 30_000;
-const HISTORY_URL = 'data/strkbtc-tvl.json';
+const POOL_API    = 'https://strkprice-pool-api-production.up.railway.app/api/pool';
+const HISTORY_URL = 'data/pool-tvl.json';
+const POLL_INTERVAL_MS    = 30_000;   // refresh the live number
+const HISTORY_REFRESH_MS  = 600_000;  // re-pull hourly history every 10 min
 
 const splash    = document.getElementById('splash');
 const container = document.querySelector('.container');
@@ -346,106 +327,83 @@ const pctEl     = document.getElementById('pct');
 const emptyEl   = document.getElementById('empty-state');
 const chartEl   = document.getElementById('chart');
 
-let lastBtcValue = null;
+let history = [];        // [{ t, usd }]
+let lastValue = null;
 let isReady = false;
 
 // ---------------------------------------------------------------------------
 // Formatting
 
-function formatBtc(btc) {
-  if (!isFinite(btc)) return '--';
-  if (btc >= 1000)  return btc.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (btc >= 1)     return btc.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-  if (btc >= 0.001) return btc.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 });
-  return btc.toLocaleString('en-US', { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+function formatUsd(v) {
+  if (v == null || !isFinite(v)) return '--';
+  return '$' + Math.round(v).toLocaleString('en-US');
 }
 
-// pct = shielded strkBTC / wrapped strkBTC * 100 — answers "what fraction of
-// strkBTC is currently in the shielded pool?"
-function formatPct(shielded, wrapped) {
-  if (!wrapped || !isFinite(shielded) || !isFinite(wrapped)) return '0%';
-  const pct = (shielded / wrapped) * 100;
-  if (pct === 0)     return '0%';
-  if (pct >= 1)      return pct.toFixed(2) + '%';
-  if (pct >= 0.01)   return pct.toFixed(4) + '%';
-  if (pct >= 0.0001) return pct.toFixed(6) + '%';
-  return pct.toExponential(2) + '%';
+// Compact form for the y-axis ($1.2M, $207K).
+function formatUsdCompact(v) {
+  if (!isFinite(v)) return '$0';
+  const a = Math.abs(v);
+  if (a >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return '$' + (v / 1e3).toFixed(0) + 'K';
+  return '$' + Math.round(v);
+}
+
+function formatPct(p) {
+  if (p == null || !isFinite(p)) return '--';
+  if (p >= 0.01)   return p.toFixed(2) + '%';
+  if (p >= 0.0001) return p.toFixed(4) + '%';
+  if (p > 0)       return p.toExponential(2) + '%';
+  return '0%';
 }
 
 // ---------------------------------------------------------------------------
-// RPC
+// Data
 
-async function rpcCall(url, selector, calldata) {
-  const body = {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'starknet_call',
-    params: {
-      request: {
-        contract_address: STRKBTC_CONTRACT,
-        entry_point_selector: selector,
-        calldata
-      },
-      block_id: 'latest'
-    }
-  };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message || 'RPC error');
-  return json.result; // [low, high] hex strings
+async function fetchPool() {
+  const res = await fetch(POOL_API, { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const d = await res.json();
+  if (typeof d.usd !== 'number') throw new Error('bad payload');
+  return d; // { usd, pct, starknet_tvl, t, tokens }
 }
 
-function parseU256ToBtc(result) {
-  const low  = BigInt(result[0]);
-  const high = BigInt(result[1] || '0x0');
-  const raw  = (high << 128n) + low;
-  // raw fits a Number safely once divided by 1e8.
-  return Number(raw) / 10 ** DECIMALS;
-}
-
-async function fetchSupplyAndShielded() {
-  let lastErr;
-  for (const url of RPC_URLS) {
-    try {
-      const wrappedRes  = await rpcCall(url, TOTAL_SUPPLY_SELECTOR, []);
-      const shieldedRes = await rpcCall(url, BALANCE_OF_SELECTOR, [POOL_ADDRESS]);
-      return {
-        wrapped:  parseU256ToBtc(wrappedRes),
-        shielded: parseU256ToBtc(shieldedRes),
-      };
-    } catch (err) {
-      lastErr = err;
-      console.warn(`RPC ${url} failed:`, err.message);
-    }
+async function loadHistory() {
+  try {
+    const res = await fetch(HISTORY_URL, { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data
+      .map(d => ({ t: new Date(d.t).getTime(), usd: Number(d.usd), pct: Number(d.pct) }))
+      .filter(d => isFinite(d.t) && isFinite(d.usd))
+      .sort((a, b) => a.t - b.t);
+  } catch (err) {
+    console.warn('No history file yet:', err.message);
+    return [];
   }
-  throw lastErr || new Error('All RPCs failed');
 }
 
 // ---------------------------------------------------------------------------
 // Display
 
-function setDisplayValue(shielded, wrapped) {
-  priceEl.textContent = formatBtc(shielded);
-  pctEl.textContent   = formatPct(shielded, wrapped);
-  document.title      = `${formatBtc(shielded)} BTC shielded · strkBTC`;
+function setDisplayValue(usd, pct) {
+  priceEl.textContent = formatUsd(usd);
+  pctEl.textContent   = formatPct(pct);
+  document.title      = `${formatUsd(usd)} shielded · strkprice`;
 
-  if (lastBtcValue !== null) {
-    if (shielded > lastBtcValue + 1e-12) {
+  if (lastValue !== null && isFinite(usd)) {
+    if (usd > lastValue + 0.005) {
       priceEl.classList.remove('flash-down');
       priceEl.classList.add('flash-up');
       setTimeout(() => priceEl.classList.remove('flash-up'), 900);
-    } else if (shielded < lastBtcValue - 1e-12) {
+    } else if (usd < lastValue - 0.005) {
       priceEl.classList.remove('flash-up');
       priceEl.classList.add('flash-down');
       setTimeout(() => priceEl.classList.remove('flash-down'), 900);
     }
   }
-  lastBtcValue = shielded;
+  if (isFinite(usd)) lastValue = usd;
 }
 
 function revealUI() {
@@ -462,37 +420,19 @@ function revealUI() {
 // ---------------------------------------------------------------------------
 // Chart
 
-async function loadHistory() {
-  try {
-    const res = await fetch(HISTORY_URL, { cache: 'no-store' });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    return data
-      .map(d => ({ t: new Date(d.t).getTime(), btc: Number(d.shielded_btc) }))
-      .filter(d => isFinite(d.t) && isFinite(d.btc))
-      .sort((a, b) => a.t - b.t);
-  } catch (err) {
-    console.warn('No history file yet:', err.message);
-    return [];
-  }
-}
-
 let chartState = null;
 
-function renderChart(points, currentBtc) {
-  // Always append the live reading so the chart has at least one segment
-  // (history + now) even when total_supply hasn't changed since the last
-  // snapshot. Same timestamp twice would collapse, but Date.now() advances.
+function renderChart(points, currentUsd) {
+  // Append the live reading so the chart always has a fresh trailing point.
   const series = points.slice();
-  if (currentBtc != null) {
-    series.push({ t: Date.now(), btc: currentBtc });
+  if (currentUsd != null && isFinite(currentUsd)) {
+    series.push({ t: Date.now(), usd: currentUsd });
   }
 
-  // Clear chart content but keep <defs> and hover elements
   Array.from(chartEl.querySelectorAll('g.layer')).forEach(n => n.remove());
 
   if (series.length < 2) {
+    emptyEl.textContent = 'Tracking from now — chart builds as snapshots land.';
     emptyEl.style.display = 'flex';
     chartState = null;
     return;
@@ -500,19 +440,19 @@ function renderChart(points, currentBtc) {
   emptyEl.style.display = 'none';
 
   const W = 800, H = 350;
-  const padL = 40, padR = 16, padT = 20, padB = 36;
+  const padL = 52, padR = 16, padT = 20, padB = 36;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
   const ts = series.map(p => p.t);
-  const ys = series.map(p => p.btc);
+  const ys = series.map(p => p.usd);
   const minT = Math.min(...ts);
   const maxT = Math.max(...ts);
   const minY = 0;
   const maxY = Math.max(...ys) * 1.15 || 1;
 
   const x = t => padL + ((t - minT) / Math.max(1, maxT - minT)) * innerW;
-  const y = v => padT + (1 - (v - minY) / Math.max(1e-12, maxY - minY)) * innerH;
+  const y = v => padT + (1 - (v - minY) / Math.max(1e-9, maxY - minY)) * innerH;
 
   const ns = 'http://www.w3.org/2000/svg';
   const layer = document.createElementNS(ns, 'g');
@@ -533,7 +473,7 @@ function renderChart(points, currentBtc) {
     label.setAttribute('y', yy - 4);
     label.setAttribute('text-anchor', 'end');
     label.setAttribute('class', 'axis-label');
-    label.textContent = formatBtc(val);
+    label.textContent = formatUsdCompact(val);
     layer.appendChild(label);
   }
 
@@ -558,7 +498,7 @@ function renderChart(points, currentBtc) {
   layer.appendChild(xEnd);
 
   // line path
-  const dLine = series.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.t).toFixed(2)} ${y(p.btc).toFixed(2)}`).join(' ');
+  const dLine = series.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.t).toFixed(2)} ${y(p.usd).toFixed(2)}`).join(' ');
   const path  = document.createElementNS(ns, 'path');
   path.setAttribute('d', dLine);
   path.setAttribute('class', 'line');
@@ -573,7 +513,6 @@ function renderChart(points, currentBtc) {
 
   chartEl.appendChild(layer);
 
-  // Stash for the hover handler (which reads the latest state each mousemove).
   chartState = { series, x, y, W, H, padT, padB };
 }
 
@@ -586,8 +525,8 @@ function setupChartHover() {
   const hDot     = document.getElementById('hover-dot');
   if (!wrapper || !tooltip) return;
 
-  const fmtFullDate = ts => new Date(ts).toLocaleDateString('en-US', {
-    year: 'numeric', month: 'short', day: 'numeric'
+  const fmtFullDate = ts => new Date(ts).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
   });
 
   const hide = () => {
@@ -602,10 +541,8 @@ function setupChartHover() {
     const rect = wrapper.getBoundingClientRect();
     if (rect.width === 0) return;
 
-    // Mouse position in SVG viewBox space
     const svgX = ((e.clientX - rect.left) / rect.width) * W;
 
-    // Nearest data point by SVG-space x distance
     let nearest = 0;
     let minDist = Infinity;
     for (let i = 0; i < series.length; i++) {
@@ -614,7 +551,7 @@ function setupChartHover() {
     }
     const p  = series[nearest];
     const px = x(p.t);
-    const py = y(p.btc);
+    const py = y(p.usd);
 
     hLine.setAttribute('x1', px);
     hLine.setAttribute('x2', px);
@@ -626,14 +563,13 @@ function setupChartHover() {
     hDot.setAttribute('cy', py);
     hDot.style.display = '';
 
-    // SVG → CSS pixel coords for HTML tooltip placement
     const htmlX = (px / W) * rect.width;
     const htmlY = (py / H) * rect.height;
     tooltip.style.left = `${htmlX}px`;
     tooltip.style.top  = `${Math.max(htmlY - 16, 30)}px`;
 
     dateEl.textContent  = fmtFullDate(p.t);
-    valueEl.textContent = `${formatBtc(p.btc)} BTC`;
+    valueEl.textContent = formatUsd(p.usd);
     tooltip.classList.add('visible');
   });
 
@@ -643,24 +579,34 @@ function setupChartHover() {
 // ---------------------------------------------------------------------------
 // Boot
 
-async function tick(history) {
+async function tick() {
   try {
-    const { wrapped, shielded } = await fetchSupplyAndShielded();
-    setDisplayValue(shielded, wrapped);
-    renderChart(history, shielded);
+    const d = await fetchPool();
+    setDisplayValue(d.usd, d.pct);
+    renderChart(history, d.usd);
     revealUI();
   } catch (err) {
-    console.error('Failed to fetch strkBTC supply/shielded:', err);
-    // Reveal UI anyway so the page doesn't sit on the splash forever
+    console.error('Pool API failed, falling back to last snapshot:', err);
+    const last = history.length ? history[history.length - 1] : null;
+    if (last) {
+      setDisplayValue(last.usd, last.pct);
+      renderChart(history, last.usd);
+    }
     revealUI();
   }
 }
 
+async function refreshHistory() {
+  const h = await loadHistory();
+  if (h.length) history = h;
+}
+
 (async function init() {
-  const history = await loadHistory();
-  await tick(history);
+  history = await loadHistory();
+  await tick();
   setupChartHover();
-  setInterval(() => tick(history), POLL_INTERVAL_MS);
+  setInterval(tick, POLL_INTERVAL_MS);
+  setInterval(refreshHistory, HISTORY_REFRESH_MS);
 })();
 
 // Page transition for the toggle pill
